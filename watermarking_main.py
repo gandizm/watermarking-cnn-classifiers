@@ -13,7 +13,7 @@ from models import *
 
 use_cuda = torch.cuda.is_available()
 
-PATH_TO_CIFAR10_PYTORCH = '/your/path'
+PATH_TO_CIFAR10_PYTORCH = '.'
 
 transform_test = transforms.Compose([
     transforms.ToTensor(),
@@ -80,99 +80,100 @@ result_file = 'logs/watermark_input_different_strength.txt'
 
 with open(result_file, 'w') as f:
     f.write('')
+# 保护。
+if __name__ == '__main__':
+    for strength in (0.01, 0.02, 0.05, 0.1, 0.2, 0.5):
 
-for strength in (0.01, 0.02, 0.05, 0.1, 0.2, 0.5):
+        with open(result_file, 'a') as f:
+            f.write('Strength %f\n'%strength)
 
-    with open(result_file, 'a') as f:
-        f.write('Strength %f\n'%strength)
+        watermark = np.array([1.221, 1.221, 1.301])[:, np.newaxis, np.newaxis] * raw_watermark[np.newaxis, :, :] * strength
 
-    watermark = np.array([1.221, 1.221, 1.301])[:, np.newaxis, np.newaxis] * raw_watermark[np.newaxis, :, :] * strength
+        # Test set, watermarked
+        transform_test_wartermarked = transforms.Compose([
+            transforms.ToTensor(),
+            RandomWatermark(watermark.astype(np.float32), probability=1.0),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+        ])
 
-    # Test set, watermarked
-    transform_test_wartermarked = transforms.Compose([
-        transforms.ToTensor(),
-        RandomWatermark(watermark.astype(np.float32), probability=1.0),
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-    ])
+        testset_watermarked = torchvision.datasets.CIFAR10(root=PATH_TO_CIFAR10_PYTORCH, train=False,
+                                               download=True, transform=transform_test_wartermarked)
+        testloader_wartermarked = torch.utils.data.DataLoader(testset_watermarked, batch_size=50,
+                                                 shuffle=False, num_workers=2)
 
-    testset_watermarked = torchvision.datasets.CIFAR10(root=PATH_TO_CIFAR10_PYTORCH, train=False,
-                                           download=True, transform=transform_test_wartermarked)
-    testloader_wartermarked = torch.utils.data.DataLoader(testset_watermarked, batch_size=50,
-                                             shuffle=False, num_workers=2)
+        # Training set, watermarked, no augmentation
+        transform_train_wartermarked = transforms.Compose([
+            transforms.ToTensor(),
+            RandomWatermark(watermark.astype(np.float32), probability=1.0),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+        ])
 
-    # Training set, watermarked, no augmentation
-    transform_train_wartermarked = transforms.Compose([
-        transforms.ToTensor(),
-        RandomWatermark(watermark.astype(np.float32), probability=1.0),
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-    ])
-
-    trainset_watermarked = torchvision.datasets.CIFAR10(root=PATH_TO_CIFAR10_PYTORCH, train=True,
-                                                        download=True, transform=transform_train_wartermarked)
-    trainloader_wartermarked = torch.utils.data.DataLoader(trainset_watermarked, batch_size=50,
-                                                           shuffle=False, num_workers=2)
-    # Training set, probabilistically watermarked, w/ augmentation
-    transform_train = transforms.Compose([
-        transforms.RandomCrop(32, padding=4),
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        RandomWatermark(watermark.astype(np.float32)),
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-    ])
-    trainset = torchvision.datasets.CIFAR10(root=PATH_TO_CIFAR10_PYTORCH, train=True,
-                                            download=True, transform=transform_train)
-    trainloader = torch.utils.data.DataLoader(trainset, batch_size=64,
-                                              shuffle=True, num_workers=2)
+        trainset_watermarked = torchvision.datasets.CIFAR10(root=PATH_TO_CIFAR10_PYTORCH, train=True,
+                                                            download=True, transform=transform_train_wartermarked)
+        trainloader_wartermarked = torch.utils.data.DataLoader(trainset_watermarked, batch_size=50,
+                                                               shuffle=False, num_workers=2)
+        # Training set, probabilistically watermarked, w/ augmentation
+        transform_train = transforms.Compose([
+            transforms.RandomCrop(32, padding=4),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            RandomWatermark(watermark.astype(np.float32)),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+        ])
+        trainset = torchvision.datasets.CIFAR10(root=PATH_TO_CIFAR10_PYTORCH, train=True,
+                                                download=True, transform=transform_train)
+        trainloader = torch.utils.data.DataLoader(trainset, batch_size=64,
+                                                  shuffle=True, num_workers=2)
 
 
-    # Test regular network
-    criterion = torch.nn.CrossEntropyLoss()
-
-    ckpt = torch.load('./2017-10-02_vgg16.t7')
-    net = ckpt['net']
-
-    net.eval()
-    test_loss = 0
-    correct = 0
-    total = 0
-    for batch_idx, (inputs, targets) in enumerate(testloader_wartermarked):
-        if use_cuda:
-            inputs, targets = inputs.cuda(), targets.cuda()
-        inputs, targets = Variable(inputs, volatile=True), Variable(targets)
-        outputs = net(inputs)
-        loss = criterion(outputs, targets)
-
-        test_loss += loss.data[0]
-        _, predicted = torch.max(outputs.data, 1)
-        total += targets.size(0)
-        correct += predicted.eq(targets.data).cpu().sum()
-
-    msg = 'Regular model watermarked test set. Loss: %.3f | Acc: %.3f%% (%d/%d)' \
-        % (test_loss/(batch_idx+1), 100.*correct/total, correct, total)
-    print(msg)
-    with open(result_file, 'a') as f:
-        f.write('%s\n'%msg)
-
-    train_loss = 0
-    correct = 0
-    total = 0
-    for batch_idx, (inputs, targets) in enumerate(trainloader_wartermarked):
-        if use_cuda:
-            inputs, targets = inputs.cuda(), targets.cuda()
-        inputs, targets = Variable(inputs, volatile=True), Variable(targets)
-        outputs = net(inputs)
-        loss = criterion(outputs, targets)
-
-        train_loss += loss.data[0]
-        _, predicted = torch.max(outputs.data, 1)
-        total += targets.size(0)
-        correct += predicted.eq(targets.data).cpu().sum()
-
-    msg = 'Regular model watermarked train set. Loss: %.3f | Acc: %.3f%% (%d/%d)' \
-          % (train_loss/(batch_idx+1), 100.*correct/total, correct, total)
-    print(msg)
-    with open(result_file, 'a') as f:
-        f.write('%s\n'%msg)
+    # # Test regular network
+    # criterion = torch.nn.CrossEntropyLoss()
+    #
+    # ckpt = torch.load('./2017-10-02_vgg16.t7')
+    # net = ckpt['net']
+    #
+    # net.eval()
+    # test_loss = 0
+    # correct = 0
+    # total = 0
+    # for batch_idx, (inputs, targets) in enumerate(testloader_wartermarked):
+    #     if use_cuda:
+    #         inputs, targets = inputs.cuda(), targets.cuda()
+    #     inputs, targets = Variable(inputs, volatile=True), Variable(targets)
+    #     outputs = net(inputs)
+    #     loss = criterion(outputs, targets)
+    #
+    #     test_loss += loss.data[0]
+    #     _, predicted = torch.max(outputs.data, 1)
+    #     total += targets.size(0)
+    #     correct += predicted.eq(targets.data).cpu().sum()
+    #
+    # msg = 'Regular model watermarked test set. Loss: %.3f | Acc: %.3f%% (%d/%d)' \
+    #     % (test_loss/(batch_idx+1), 100.*correct/total, correct, total)
+    # print(msg)
+    # with open(result_file, 'a') as f:
+    #     f.write('%s\n'%msg)
+    #
+    # train_loss = 0
+    # correct = 0
+    # total = 0
+    # for batch_idx, (inputs, targets) in enumerate(trainloader_wartermarked):
+    #     if use_cuda:
+    #         inputs, targets = inputs.cuda(), targets.cuda()
+    #     inputs, targets = Variable(inputs, volatile=True), Variable(targets)
+    #     outputs = net(inputs)
+    #     loss = criterion(outputs, targets)
+    #
+    #     train_loss += loss.data[0]
+    #     _, predicted = torch.max(outputs.data, 1)
+    #     total += targets.size(0)
+    #     correct += predicted.eq(targets.data).cpu().sum()
+    #
+    # msg = 'Regular model watermarked train set. Loss: %.3f | Acc: %.3f%% (%d/%d)' \
+    #       % (train_loss/(batch_idx+1), 100.*correct/total, correct, total)
+    # print(msg)
+    # with open(result_file, 'a') as f:
+    #     f.write('%s\n'%msg)
 
     # Train network
     best_acc = 0
@@ -204,13 +205,12 @@ for strength in (0.01, 0.02, 0.05, 0.1, 0.2, 0.5):
             if use_cuda:
                 inputs, targets = inputs.cuda(), targets.cuda()
             optimizer.zero_grad()
-            inputs, targets = Variable(inputs), Variable(targets)
             outputs = net(inputs)
             loss = criterion(outputs, targets)
             loss.backward()
             optimizer.step()
 
-            train_loss += loss.data[0]
+            train_loss += loss.item()
             _, predicted = torch.max(outputs.data, 1)
             total += targets.size(0)
             correct += predicted.eq(targets.data).cpu().sum()
@@ -228,11 +228,10 @@ for strength in (0.01, 0.02, 0.05, 0.1, 0.2, 0.5):
         for batch_idx, (inputs, targets) in enumerate(testloader):
             if use_cuda:
                 inputs, targets = inputs.cuda(), targets.cuda()
-            inputs, targets = Variable(inputs, volatile=True), Variable(targets)
             outputs = net(inputs)
             loss = criterion(outputs, targets)
 
-            test_loss += loss.data[0]
+            test_loss += loss.item()
             _, predicted = torch.max(outputs.data, 1)
             total += targets.size(0)
             correct += predicted.eq(targets.data).cpu().sum()
@@ -269,11 +268,10 @@ for strength in (0.01, 0.02, 0.05, 0.1, 0.2, 0.5):
     for batch_idx, (inputs, targets) in enumerate(testloader):
         if use_cuda:
             inputs, targets = inputs.cuda(), targets.cuda()
-        inputs, targets = Variable(inputs, volatile=True), Variable(targets)
         outputs = net(inputs)
         loss = criterion(outputs, targets)
 
-        test_loss += loss.data[0]
+        test_loss += loss.item()
         _, predicted = torch.max(outputs.data, 1)
         total += targets.size(0)
         correct += predicted.eq(targets.data).cpu().sum()
@@ -292,11 +290,10 @@ for strength in (0.01, 0.02, 0.05, 0.1, 0.2, 0.5):
     for batch_idx, (inputs, targets) in enumerate(testloader_wartermarked):
         if use_cuda:
             inputs, targets = inputs.cuda(), targets.cuda()
-        inputs, targets = Variable(inputs, volatile=True), Variable(targets)
         outputs = net(inputs)
         loss = criterion(outputs, targets)
 
-        test_loss += loss.data[0]
+        test_loss += loss.item()
         _, predicted = torch.max(outputs.data, 1)
         total += targets.size(0)
         correct += predicted.eq(targets.data).cpu().sum()
@@ -315,11 +312,10 @@ for strength in (0.01, 0.02, 0.05, 0.1, 0.2, 0.5):
     for batch_idx, (inputs, targets) in enumerate(trainloader_wartermarked):
         if use_cuda:
             inputs, targets = inputs.cuda(), targets.cuda()
-        inputs, targets = Variable(inputs, volatile=True), Variable(targets)
         outputs = net(inputs)
         loss = criterion(outputs, targets)
 
-        train_loss += loss.data[0]
+        train_loss += loss.item()
         _, predicted = torch.max(outputs.data, 1)
         total += targets.size(0)
         correct += predicted.eq(targets.data).cpu().sum()
